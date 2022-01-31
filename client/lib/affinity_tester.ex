@@ -10,16 +10,17 @@ defmodule AffinityTester do
 
   def init([tgt_ip, tgt_port]) do
     {:ok, sock} = :gen_udp.open(0, [mode: :binary, active: true])
-    :timer.send_interval(20_000, :ping) # 20s
-    :timer.send_interval(1 * 60_000, :stats) # 1min
+    :timer.send_interval(10_000, :ping) # 15s
     id = Enum.random 1_000_000_000..2_147_483_647
     {:ok, %{sock: sock, tgt_ip: tgt_ip, tgt_port: tgt_port, seq: 1, sent: [], id: id, pod_name: nil, x_address: nil}}
   end
 
   # sends message to server at regular interval
-  def handle_info(:ping, state = %{sock: sock, tgt_ip: ip, tgt_port: port}) do
+  def handle_info(:ping, state = %{id: id, sock: sock, tgt_ip: ip, tgt_port: port}) do
     :ok = :gen_udp.send(sock, ip, port, request(state))
-    {:noreply, %{state | seq: state.seq + 1, sent: push(state.seq, state.sent)}}
+    sent = push(state.seq, state.sent)
+    peek(id, sent)
+    {:noreply, %{state | seq: state.seq + 1, sent: sent}}
   end
 
   # handles the message received from server in response
@@ -28,11 +29,6 @@ defmodule AffinityTester do
       {:ok, msg} -> validate(msg, state)
       _error -> {:noreply, state}
     end
-  end
-
-  def handle_info(:stats, state = %{id: id, seq: seq, sent: sent, pod_name: pod_name}) do
-    Logger.info "CLIENT-#{id} sent #{seq} messages of which #{length(sent) - 1} message(s) lost, served by pod #{inspect pod_name}"
-    {:noreply, state}
   end
 
   def changed?(x, y), do: x != nil and x != y
@@ -49,6 +45,9 @@ defmodule AffinityTester do
   end
 
   def validate(%{seq: seq, x_address: x_address, pod_name: pod_name}, state) do
+    if state.x_address == nil do
+      Logger.info "CLIENT-#{state.id} established connection: reflective address is #{inspect x_address}"
+    end
     if changed?(state.pod_name, pod_name), do: 
       Logger.error "pod_name changed #{inspect state.pod_name} -> #{inspect pod_name}" 
     if changed?(state.x_address, x_address), do: 
@@ -59,11 +58,19 @@ defmodule AffinityTester do
   def push(x, xs) do
     [x | xs]
   end
-  def pop(x, [x|xs]) do
+
+  # pops all values <= x
+  def pop(x, [y|ys]) when x >= y do
+    pop(x, ys)
+  end
+  def pop(_y, xs) do
     xs
   end
-  def pop(_y, xs) do # y != x where x = head xs
-    xs
+
+  def peek(id, xs) do
+    if length(xs) > 2 do
+      Logger.error "CLIENT-#{id} detected gap #{inspect xs}"
+    end
   end
 
 end
