@@ -3,6 +3,7 @@ defmodule AffinityTester do
   require Logger
 
   def start_link([]) do
+    :timer.sleep(Enum.random(0..5_000)) # ensures clients don't all start at the same time
     {:ok, ip} = System.fetch_env!("TARGET_ADDR") |> String.to_charlist |> :inet.parse_address
     port = System.fetch_env!("TARGET_PORT") |> String.to_integer
     GenServer.start_link(__MODULE__, [ip, port])
@@ -10,16 +11,17 @@ defmodule AffinityTester do
 
   def init([tgt_ip, tgt_port]) do
     {:ok, sock} = :gen_udp.open(0, [mode: :binary, active: true])
-    :timer.send_interval(10_000, :ping) # 15s
+    :timer.send_interval(10_000, :ping) # a client pings every 10s
     id = Enum.random 1_000_000_000..2_147_483_647
-    {:ok, %{sock: sock, tgt_ip: tgt_ip, tgt_port: tgt_port, seq: 1, sent: [], id: id, pod_name: nil, x_address: nil}}
+    {:ok, my_port} = :inet.port(sock)
+    {:ok, %{sock: sock, my_port: my_port, tgt_ip: tgt_ip, tgt_port: tgt_port, seq: 1, sent: [], id: id, pod_name: nil, x_address: nil}}
   end
 
   # sends message to server at regular interval
-  def handle_info(:ping, state = %{id: id, sock: sock, tgt_ip: ip, tgt_port: port}) do
+  def handle_info(:ping, state = %{id: id, sock: sock, tgt_ip: ip, tgt_port: port, my_port: my_port}) do
     :ok = :gen_udp.send(sock, ip, port, request(state))
     sent = push(state.seq, state.sent)
-    peek(id, sent)
+    peek(id, my_port, sent)
     {:noreply, %{state | seq: state.seq + 1, sent: sent}}
   end
 
@@ -46,7 +48,7 @@ defmodule AffinityTester do
 
   def validate(%{seq: seq, x_address: x_address, pod_name: pod_name}, state) do
     if state.x_address == nil do
-      Logger.info "CLIENT-#{state.id} established connection: reflective address is #{inspect x_address}"
+      Logger.info "CLIENT-#{state.id}-#{state.my_port} established connection: reflective address is #{inspect x_address}"
     end
     if changed?(state.pod_name, pod_name), do: 
       Logger.error "pod_name changed #{inspect state.pod_name} -> #{inspect pod_name}" 
@@ -67,9 +69,9 @@ defmodule AffinityTester do
     xs
   end
 
-  def peek(id, xs) do
+  def peek(id, my_port, xs) do
     if length(xs) > 2 do
-      Logger.error "CLIENT-#{id} detected gap #{inspect xs}"
+      Logger.error "CLIENT-#{id}-#{my_port} detected gap #{inspect xs}"
     end
   end
 
